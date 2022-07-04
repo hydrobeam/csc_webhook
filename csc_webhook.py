@@ -2,7 +2,7 @@
 
 Instructions:
 
-- Change the url at the end to point at the desired channel.
+- Change the url at the end to point at the desired webhook.
 
 Dependencies:
 
@@ -51,15 +51,21 @@ class Status(Enum):
     BROKE = 3
 
     @classmethod
-    def from_bool(cls, bool_val: bool) -> Status:
+    def from_int(cls, int_val: int) -> Status:
         """Convenience method to generate Status from a boolean.
 
         Only works for OPEN/CLOSED since BROKE means no bool was received.
         """
-        if bool_val:
-            return cls.OPEN
-        else:
-            return cls.CLOSED
+        match int_val:
+            case 1:
+                return cls.OPEN
+            case 0:
+                return cls.CLOSED
+            case -1:
+                return cls.BROKE
+            case _:
+                # this should never happen
+                return cls.BROKE
 
 
 def fetch_status() -> dict[str, int] | None:
@@ -98,7 +104,7 @@ def post_embed(embed: Embed):
     webhook_obj.send(embed=embed)
 
 
-def main_func():
+def main_func(status: dict[str, int] | None = None):
     """Governs whether ot not an embed is posted.
 
     Checks the status of the office, then sees if it's
@@ -106,8 +112,15 @@ def main_func():
 
     If so, post an embed to alert users about changes
 
+    Parameters
+    ----------
+
+    status
+        Not meant to be used in prod. Makes testing a bit more convenient.
+
     """
-    status = fetch_status()  # can return None
+    if status is None:
+        status = fetch_status()  # can return None
 
     maybe = office_status.update_from_status(status)
 
@@ -135,13 +148,12 @@ class OfficeStatus:
         """
         changed: bool = False
 
-        if dict_val is None:
-            if self.office_stat != Status.BROKE:
-                self.office_stat = Status.BROKE
-                changed = True
+        if dict_val is None and self.office_stat!= Status.BROKE:
+            self.office_stat = Status.BROKE
+            changed = True
         else:
-            is_open = bool(dict_val["status"])
-            if (ret_stat := Status.from_bool(is_open)) != self.office_stat:
+            of_status:int = dict_val["status"]
+            if (ret_stat := Status.from_int(of_status)) != self.office_stat:
                 self.office_stat = ret_stat
                 changed = True
 
@@ -193,25 +205,25 @@ Please wait until detection goes back online.
         return embed
 
 
+# time values are arbitrary
+
 def test_open():
     status = {"status": 1, "time": 13123123412}
-    maybe = office_status.update_from_status(status)
-    if maybe is not None:
-        post_embed(maybe)
+    main_func(status)
 
 
 def test_closed():
     status = {"status": 0, "time": 3123123412}
-    maybe = office_status.update_from_status(status)
-    if maybe is not None:
-        post_embed(maybe)
+    main_func(status)
 
 
 def test_broke():
+    """Sends two embeds out."""
     status = None
-    maybe = office_status.update_from_status(status)
-    if maybe is not None:
-        post_embed(maybe)
+    main_func(status)
+
+    status = {"status": -1, "time": 3123123412}
+    main_func(status)
 
 
 if __name__ == "__main__":
