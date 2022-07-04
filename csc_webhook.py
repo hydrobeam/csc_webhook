@@ -33,6 +33,66 @@ OFFICE_BROKE_COLOR = 0xFFCC00
 STATUS_URL = "https://csclub.uwaterloo.ca/~n3parikh/office-status.json"
 
 
+def fetch_status() -> dict[str, int] | None:
+    """Fetches the status of the office from STATUS_URL.
+
+    Returns
+    --------
+    dict[str, int]
+        None if anything goes wrong, means the sensor is down and we
+        should trigger a warning. Or, the desired dict.
+    """
+
+    # blank except since we don't care what went wrong, just that it did.
+    try:
+        ret = requests.get(STATUS_URL).json()
+        # will error if "time" DNE
+        if ret["time"]:
+            return ret
+    except:
+        return None
+
+
+def run(scheduler: BlockingScheduler):
+    """Sets up the cron job to run the main job every 5 minutes."""
+    # https://apscheduler.readthedocs.io/en/3.x/modules/triggers/cron.html?highlight=cron#module-apscheduler.triggers.cron
+    scheduler.add_job(
+        main_func,
+        "cron",
+        minute=f"*",  # update every minute since that's how often the sensor checks
+    )
+
+    scheduler.start()
+
+
+def post_embed(embed: Embed):
+    """Sends the embed to the desired channel."""
+    webhook_obj.send(embed=embed)
+
+
+def main_func(status: dict[str, int] | None = None):
+    """Governs whether ot not an embed is posted.
+
+    Checks the status of the office, then sees if it's
+    different from the current status, or is broken.
+
+    If so, post an embed to alert users about changes.
+
+    Parameters
+    ----------
+    status: dict[str, int] | None
+        Not meant to be used in prod. Makes testing a bit more convenient.
+
+    """
+    if status is None:
+        status = fetch_status()  # can return None
+
+    maybe = office_status.update_from_status(status)
+
+    if maybe is not None:
+        post_embed(maybe)
+
+
 class Status(Enum):
     """Represents the possible states of the office.
 
@@ -50,13 +110,24 @@ class Status(Enum):
     CLOSED = 2
     BROKE = 3
 
-    @classmethod
-    def from_int(cls, int_val: int) -> Status:
-        """Convenience method to generate Status from a boolean.
+    def to_str(self) -> str:
+        """Returns a human readable representation of the Enum."""
+        match self:
+            case Status.OPEN:
+                return "Open"
+            case Status.CLOSED:
+                return "Closed"
+            case Status.BROKE:
+                return "Unavailable"
 
-        Only works for OPEN/CLOSED since BROKE means no bool was received.
+    @classmethod
+    def from_int(cls, status_val: int) -> Status:
+        """Convenience method to generate Status from an integer.
+
+        Status value is received from `fetch_status`. Possible values are:
+        `0`,`1`,`-1`
         """
-        match int_val:
+        match status_val:
             case 1:
                 return cls.OPEN
             case 0:
@@ -65,72 +136,13 @@ class Status(Enum):
                 return cls.BROKE
             case _:
                 # this should never happen
+                # but if it does...
                 return cls.BROKE
-
-
-def fetch_status() -> dict[str, int] | None:
-    """Fetches the status of the office from STATUS_URL.
-
-    Returns
-    --------
-    dict[str, int]
-        None if anything goes wrong, means the sensor is down and we
-        should trigger a warning. Or, the desired dict.
-    """
-
-    try:
-        ret = requests.get(STATUS_URL).json()
-        # will error if "time" DNE
-        if ret["time"]:
-            return ret
-    except:
-        return None
-
-
-def run(scheduler: BlockingScheduler):
-    """Sets up the cron job to run the main job every 5 minutes."""
-    # https://apscheduler.readthedocs.io/en/3.x/modules/triggers/cron.html?highlight=cron#module-apscheduler.triggers.cron
-    scheduler.add_job(
-        main_func,
-        "cron",
-        minute=f"*/5",
-    )
-
-    scheduler.start()
-
-
-def post_embed(embed: Embed):
-    """Sends the embed to the desired channel."""
-    webhook_obj.send(embed=embed)
-
-
-def main_func(status: dict[str, int] | None = None):
-    """Governs whether ot not an embed is posted.
-
-    Checks the status of the office, then sees if it's
-    different from the current status, or is broken.
-
-    If so, post an embed to alert users about changes
-
-    Parameters
-    ----------
-
-    status
-        Not meant to be used in prod. Makes testing a bit more convenient.
-
-    """
-    if status is None:
-        status = fetch_status()  # can return None
-
-    maybe = office_status.update_from_status(status)
-
-    if maybe is not None:
-        post_embed(maybe)
 
 
 @dataclass
 class OfficeStatus:
-    open_since: datetime = datetime.fromtimestamp(1000)
+    last_status_change: datetime = datetime.fromtimestamp(1000)
     office_stat: Status = Status.CLOSED
 
     def update_from_status(self, dict_val: dict[str, int] | None) -> Embed | None:
@@ -148,11 +160,15 @@ class OfficeStatus:
         """
         changed: bool = False
 
-        if dict_val is None and self.office_stat!= Status.BROKE:
-            self.office_stat = Status.BROKE
-            changed = True
+        if dict_val is None:
+            if self.office_stat != Status.BROKE:
+                self.office_stat = Status.BROKE
+                self.last_status_change = datetime.now()
+                changed = True
         else:
-            of_status:int = dict_val["status"]
+            self.last_status_change = datetime.fromtimestamp(dict_val["time"])
+            of_status: int = dict_val["status"]
+
             if (ret_stat := Status.from_int(of_status)) != self.office_stat:
                 self.office_stat = ret_stat
                 changed = True
@@ -164,23 +180,24 @@ class OfficeStatus:
     def create_embed(self):
         """Creates an embed according to discord.py (now defunct) semantics.
 
-        refer to https://cog-creators.github.io/discord-embed-sandbox/
+        refer to
+
+        https://cog-creators.github.io/discord-embed-sandbox/
+
         to create your own.
         """
 
         match self.office_stat:
             case Status.OPEN:
                 description = f"""
-Office is open 🥳!
-Open since: **{self.open_since.strftime('%H:%M')}**
+The office is open 🥳!
 """
                 color = OFFICE_OPEN_COLOR
                 logo_link = CODEY_HAPPY
 
             case Status.CLOSED:
                 description = f"""
-Office has closed 😭!
-Closed since: **{self.open_since.strftime('%H:%M')}**
+The office is closed 😭!
 """
                 color = OFFICE_CLOSED_COLOR
                 logo_link = CODEY_SAD
@@ -190,6 +207,7 @@ Closed since: **{self.open_since.strftime('%H:%M')}**
 Something went wrong!
 Please wait until detection goes back online.
 """
+
                 color = OFFICE_BROKE_COLOR
                 logo_link = CODEY_STRESSED
 
@@ -201,11 +219,18 @@ Please wait until detection goes back online.
         )
         embed.set_thumbnail(url=logo_link)
         embed.set_footer(text=f"Source: {STATUS_URL}")
+        embed.add_field(
+            name=f"{self.office_stat.to_str()} since:",
+            value=f"{self.last_status_change.strftime('%A, %I:%M%p')}",
+            inline=False,
+        )
 
         return embed
 
 
+# tests
 # time values are arbitrary
+
 
 def test_open():
     status = {"status": 1, "time": 13123123412}
@@ -218,16 +243,12 @@ def test_closed():
 
 
 def test_broke():
-    """Sends two embeds out."""
-    status = None
-    main_func(status)
-
     status = {"status": -1, "time": 3123123412}
     main_func(status)
 
 
 if __name__ == "__main__":
-    url = "https://discord.com/api/webhooks/941854767280439387/Ru0ClUiqJ8DhaA7lcnds4zl8QFuTx-j1aksKEdPXCNTbzeAsermQkcqSYrl3fvk-oFtD"
+    url = "WEBHOOK_URL"
 
     webhook_obj = Webhook(url)
     scheduler = BlockingScheduler()
