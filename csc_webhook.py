@@ -1,5 +1,7 @@
 """Tracks the Waterloo CSC office status.
 
+Updates a single message in the webhook channel as to not flood the feed.
+
 Instructions:
 
 - Change the url at the end to point at the desired webhook.
@@ -13,6 +15,7 @@ Dependencies:
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass
 from datetime import datetime
 from enum import Enum
@@ -20,6 +23,8 @@ from enum import Enum
 import requests
 from apscheduler.schedulers.blocking import BlockingScheduler
 from dhooks import Embed, Webhook
+
+logging.basicConfig(format="%(asctime)s %(message)s : ", level=logging.INFO)
 
 # codey emojis pulled from discord
 CODEY_SAD = "https://cdn.discordapp.com/emojis/848375346126651422.webp?size=160&quality=lossless"
@@ -65,9 +70,48 @@ def run(scheduler: BlockingScheduler):
     scheduler.start()
 
 
-def post_embed(embed: Embed):
-    """Sends the embed to the desired channel."""
-    webhook_obj.send(embed=embed)
+def gen_message() -> int:
+    """Generates a dummy message for the sole purpose of getting its message id.
+
+    To be updated via `update_message`.
+    """
+    result = requests.post(
+        f"https://discord.com/api/webhooks/{webhook_obj.id}/{webhook_obj.token}",
+        json={"content": "temp"},
+        params={"wait": True},
+    )
+
+    return result.json()["id"]
+
+
+def update_message(embed: Embed):
+    """Updates the message at office_status.message_id.
+
+    If the message is not updated cleanly, we assume the message we want to update has
+    been deleted so we send a dummy message then update.
+
+    Parameters
+    ----------
+    embed: Embed
+        The embed used to replace the exisiting message
+
+    """
+    result = requests.patch(
+        f"https://discord.com/api/webhooks/{webhook_obj.id}/{webhook_obj.token}/messages/{office_status.message_id}",
+        json={"embeds": [embed.to_dict()]},
+    )
+
+    if result.status_code != 200:
+        office_status.message_id = gen_message()
+        logging.warning(
+            f"Message has been deleted. New message id: {office_status.message_id}"
+        )
+        requests.patch(
+            f"https://discord.com/api/webhooks/{webhook_obj.id}/{webhook_obj.token}/messages/{office_status.message_id}",
+            json={"embeds": [embed.to_dict()]},
+        )
+
+    logging.info(f"Updated message")
 
 
 def main_func(status: dict[str, int] | None = None):
@@ -90,7 +134,7 @@ def main_func(status: dict[str, int] | None = None):
     maybe = office_status.update_from_status(status)
 
     if maybe is not None:
-        post_embed(maybe)
+        update_message(embed=maybe)
 
 
 class Status(Enum):
@@ -142,6 +186,22 @@ class Status(Enum):
 
 @dataclass
 class OfficeStatus:
+    """Class representing the status of the CSC Office.
+
+    Parameters
+    ----------
+    message_id: int
+        The id of the message that will be continually updated. Must be provided.
+        If it suddenly becomes unavailable then it will be regenerated.
+    last_status_change: datetime
+        The last time the office changed its status. Provided as a time from epoch from
+        the `fetch_status` function.
+    office_stat: Status
+        The current actual office status, represented by a `Status` Enum that can
+        hold three possible statuses.
+    """
+
+    message_id: int
     last_status_change: datetime = datetime.fromtimestamp(1000)
     office_stat: Status = Status.CLOSED
 
@@ -151,12 +211,14 @@ class OfficeStatus:
         Parameters
         ----------
         dict_val: dict[str, int] | None
-            A dict if a valid status has been received, otherwise, will send out a "Things Aren't working"message.
+            A dict if a valid status has been received, otherwise,
+            will send out a "Things Aren't working" message.
 
         Returns
         -------
         Embed | None
-            Sends out an embed if the status has changed, otherwise, do nothing. (Even in the case of non-operational status)
+            Sends out an embed if the status has changed, otherwise, do nothing.
+            (Even in the case of non-operational status)
         """
         changed: bool = False
 
@@ -177,17 +239,35 @@ class OfficeStatus:
             embed = self.create_embed()
             return embed
 
-    def create_embed(self):
+        logging.debug("No changes detected in update_from_status")
+
+    def create_embed(
+        self, office_stat: Status | None = None, office_time: datetime | None = None
+    ):
         """Creates an embed according to discord.py (now defunct) semantics.
 
-        refer to
+        Parameters
+        ----------
+        office_stat: Status | None
+            Optional param used if creating own embed. Influences the colour of the embed and the
+            declared status of the office.
+        office_time: datetime | None
+            Optional param used if creating own embed. Represents the time that
+            the message will contain
+
+        Note
+        ----
+        Refer to
 
         https://cog-creators.github.io/discord-embed-sandbox/
 
-        to create your own.
+        to design your own embed.
         """
 
-        match self.office_stat:
+        office_stat = self.office_stat if office_stat is None else office_stat
+        office_time = self.last_status_change if office_time is None else office_time
+
+        match office_stat:
             case Status.OPEN:
                 description = f"""
 The office is open 🥳!
@@ -207,7 +287,6 @@ The office is closed 😭!
 Something went wrong!
 Please wait until detection goes back online.
 """
-
                 color = OFFICE_BROKE_COLOR
                 logo_link = CODEY_STRESSED
 
@@ -217,11 +296,12 @@ Please wait until detection goes back online.
             color=color,
             description=description,
         )
+
         embed.set_thumbnail(url=logo_link)
         embed.set_footer(text=f"Source: {STATUS_URL}")
         embed.add_field(
-            name=f"{self.office_stat.to_str()} since:",
-            value=f"{self.last_status_change.strftime('%A, %I:%M%p')}",
+            name=f"{office_stat.to_str()} since:",
+            value=f"{office_time.strftime('%A, %I:%M%p')}",
             inline=False,
         )
 
@@ -248,11 +328,20 @@ def test_broke():
 
 
 if __name__ == "__main__":
-    url = "WEBHOOK_URL"
+    url = "https://discord.com/api/webhooks/993612639211098222/zsEB8qBWPN8ITFVhcAuW9p2VxMkTqI9yztegWyLMy4nrW4VGniByybYXTu5n0e47mBY6"
 
     webhook_obj = Webhook(url)
     scheduler = BlockingScheduler()
-    office_status = OfficeStatus()
+    office_status = OfficeStatus(message_id=gen_message())
+
+    # update message in channel from test message
+    curr_status = fetch_status()
+    curr_status = (
+        Status.BROKE if curr_status is None else Status.from_int(curr_status["status"])
+    )
+    update_message(
+        office_status.create_embed(office_stat=curr_status, office_time=datetime.now())
+    )
 
     # terrible tests but yolo
 
