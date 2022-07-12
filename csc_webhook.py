@@ -19,7 +19,7 @@ import requests
 from apscheduler.schedulers.blocking import BlockingScheduler
 from dhooks import Embed, Webhook
 
-logging.basicConfig(format="%(asctime)s %(message)s : ", level=logging.INFO)
+logging.basicConfig(format="%(asctime)s: %(message)s", level=logging.INFO)
 
 # codey emojis pulled from discord
 CODEY_SAD = "https://cdn.discordapp.com/emojis/848375346126651422.webp?size=160&quality=lossless"
