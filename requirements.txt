@@ -1,2 +1,2 @@
-dhooks=1.1.4
-apscheduler=3.9
+dhooks==1.1.4
+apscheduler==3.9
