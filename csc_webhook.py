@@ -5,20 +5,11 @@ Updates a single message in the webhook channel as to not flood the feed.
 Updating is done by deleting/re-sending the message to avoid `(edited)`
 tags.
 
-Instructions:
-
-- Change the url at the end to point at the desired webhook.
-
-Dependencies:
-
-- Python 3.10.x
-- dhooks: 1.1.4
-- apscheduler: 3.9
-
 """
 
 from __future__ import annotations
 
+import configparser
 import logging
 from dataclasses import dataclass
 from datetime import datetime
@@ -108,7 +99,7 @@ def update_message(embed: Embed):
     been deleted so we send a dummy message then update.
 
     WARNING: Not used. Ultimately sending/deleting message is preffered.
-    
+
     Parameters
     ----------
     embed: Embed
@@ -348,16 +339,17 @@ def test_broke():
 
 
 if __name__ == "__main__":
-    url = "WEBHOOK_URL"
-
-    webhook_obj = Webhook(url)
-    scheduler = BlockingScheduler()
+    # read config
+    config = configparser.ConfigParser()
+    config.read("config.ini")
+    webhook_obj = Webhook(config["webhook"]["url"])
 
     curr_status = fetch_status()
     curr_status = (
         Status.BROKE if curr_status is None else Status.from_int(curr_status["status"])
     )
 
+    # used/modified globally
     office_status = OfficeStatus()
 
     office_status.message_id = gen_message(
@@ -370,4 +362,5 @@ if __name__ == "__main__":
     # test_closed()
     # test_broke()
 
+    scheduler = BlockingScheduler()
     run(scheduler)

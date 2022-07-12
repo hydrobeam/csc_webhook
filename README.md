@@ -22,11 +22,14 @@ python3 -m pip install -r requirements.txt
 ```
 
 
-To run the script:
+## Running
+
+First, modify the default `config.ini` file with the desired webhook URL.
+
+Then, to run the script:
 
 ``` bash
 python3 csc_webhook.py
 ```
-
 
 
